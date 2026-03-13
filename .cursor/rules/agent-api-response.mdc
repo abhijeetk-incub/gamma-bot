@@ -1,0 +1,85 @@
+---
+description: Agent API response structure for Slack bot
+globs: app.py
+alwaysApply: false
+---
+
+# Agent API Response Structure
+
+The agent API returns responses with specific field names that must be handled correctly throughout the Slack bot.
+
+## Response Format
+
+### Chat/Ask Endpoint
+
+**Endpoint:** `POST /chat`
+
+**Response:**
+```json
+{
+  "answer": "The AI-generated response text here..."
+}
+```
+
+**Field:** `answer` (NOT `response`)
+
+### Example Response
+
+```python
+result = {
+    'answer': 'Yes, based on the team feedback message, you have experience working with Tailwind CSS...'
+}
+```
+
+## Code Usage
+
+### ❌ INCORRECT
+
+```python
+response_text = result.get("response", "No response received")  # Wrong field!
+```
+
+### ✅ CORRECT
+
+```python
+response_text = result.get("answer", "No response received")
+```
+
+## All Response Fields
+
+| Endpoint | Response Fields |
+|----------|----------------|
+| `/chat` | `answer` (string) |
+| `/regenerate` | `answer` (string) |
+| `/finalize` | `status` (string), `message` (string) |
+| `/proposal/{id}` | `project_id`, `version`, `content`, `timestamp` |
+
+## Important Notes
+
+- Always use `.get("answer")` for chat responses
+- The field is called `answer`, not `response`
+- Default value should be `"No response received"`
+- Check for errors with `if "error" in result` before accessing answer
+
+## Pattern to Follow
+
+```python
+try:
+    result = call_agent_api("chat", {...})
+    
+    # Access the answer field
+    answer_text = result.get("answer", "No response received")
+    
+    # Use in Slack response
+    say({
+        "blocks": [{
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Response:*\n{answer_text}"
+            }
+        }]
+    })
+except Exception as e:
+    say(f"❌ Error: {str(e)}")
+```

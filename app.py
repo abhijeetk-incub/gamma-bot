@@ -223,16 +223,16 @@ def handle_ask_command(ack, say, command):
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": "💡 Use `/regenerate` to get a different response or `/finalize` to confirm"
+                        "text": "💡 Use `/refine-proposal` to get a different response or `/finalize` to confirm"
                     }
                 ]
             }
         ]
     })
 
-# Handle /regenerate command
-@app.command("/regenerate")
-def handle_regenerate_command(ack, say, command):
+# Handle /refine command (refine proposal)
+@app.command("/refine-proposal")
+def handle_refine_command(ack, say, command):
     ack()
     user_id = command["user_id"]
     channel_id = command["channel_id"]
@@ -246,38 +246,25 @@ def handle_regenerate_command(ack, say, command):
     state = conversation_state[conversation_key]
     original_query = state["last_query"]
     
-    say(f"🔄 Regenerating response for: _{original_query}_\n⏳ Please wait...")
+    say(f"🔄 Refining proposal for: _{original_query}_\n⏳ Please wait...")
     
     # Get message history from this channel
     message_history = get_channel_message_history(channel_id, limit=50)
     
-    # MOCK RESPONSE - Comment out for production
-    result = {
-        "response": f"This is a REGENERATED mock response to: '{original_query}'\n\n"
-                   f"• Channel ID: {channel_id}\n"
-                   f"• Project ID: {'Not linked'}\n"
-                   f"• Previous messages: {len(message_history)} found\n"
-                   f"• Session ID: {state.get('session_id', 'N/A')}\n\n"
-                   f"🔄 This is a different version of the response (mock).",
-        "session_id": state.get("session_id", "")
-    }
+    # Get project_id for this channel
+    project_id = state.get("project_id")
     
-    # Uncomment below for production (and comment out mock response above)
-    # try:
-    #     # Convert message_history to list of strings (just the text)
-    #     messages_text = [msg['text'] for msg in message_history]
-    #     
-    #     result = call_agent_api("regenerate", {
-    #         "query": original_query,
-    #         "user_id": user_id,
-    #         "channel_id": channel_id,
-    #         "session_id": state.get("session_id", ""),
-    #         "project_id": state.get("project_id"),
-    #         "messages": messages_text
-    #     })
-    # except Exception as e:
-    #     say(f"❌ Error: {str(e)}")
-    #     return
+    try:
+        # Convert message_history to list of strings (just the text)
+        messages_text = [msg['text'] for msg in message_history]
+        
+        result = call_agent_api("generate", {
+            "project_id": project_id,
+            "messages": messages_text
+        })
+    except Exception as e:
+        say(f"❌ Error: {str(e)}")
+        return
     
     # Update conversation state
     conversation_state[conversation_key]["last_response"] = result.get("response", "")
@@ -291,7 +278,7 @@ def handle_regenerate_command(ack, say, command):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*Regenerated Response:*\n{response_text}"
+                    "text": f"*Refined Proposal:*\n{response_text}"
                 }
             },
             {
@@ -299,7 +286,7 @@ def handle_regenerate_command(ack, say, command):
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": "💡 Use `/regenerate` again for another version or `/finalize` to confirm"
+                        "text": "💡 Use `/refine-proposal` again for another version or `/finalize` to confirm"
                     }
                 ]
             }
@@ -370,9 +357,9 @@ def handle_finalize_command(ack, say, command):
     # Clear conversation state for this user/channel
     del conversation_state[conversation_key]
 
-# Handle /proposal command
-@app.command("/proposal")
-def handle_proposal_command(ack, say, command):
+# Handle /show-proposal command
+@app.command("/show-proposal")
+def handle_show_proposal_command(ack, say, command):
     ack()
     channel_id = command["channel_id"]
     
@@ -504,7 +491,7 @@ def handle_proposal_command(ack, say, command):
         "elements": [
             {
                 "type": "mrkdwn",
-                "text": f"💡 Use `/ask` to ask questions about this proposal | Content split into {len(content_chunks)} part(s)"
+                "text": f"💡 Use `/refine-proposal` to refine this proposal or `/ask` to ask questions | Content split into {len(content_chunks)} part(s)"
             }
         ]
     })
@@ -536,7 +523,7 @@ def handle_help_command(ack, say):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "• `/ask <question>` - Ask the AI agent a question\n• `/proposal` - View the proposal for this channel\n• `/regenerate` - Generate a different response to your last question\n• `/finalize` - Confirm and save the current response\n• `/status` - Check bot status\n• `/clear` - Clear your conversation history\n• `/help` - Show this help message"
+                    "text": "• `/ask <question>` - Ask the AI agent a question\n• `/show-proposal` - View the proposal for this channel\n• `/refine-proposal` - Refine the proposal with a different version\n• `/finalize` - Confirm and save the current response\n• `/status` - Check bot status\n• `/clear` - Clear your conversation history\n• `/help` - Show this help message"
                 }
             },
             {
@@ -726,10 +713,10 @@ def handle_message_events(event, say):
                 {
                     "type": "context",
                     "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": "💡 Use `/regenerate` for another version or `/finalize` to confirm"
-                        }
+                    {
+                        "type": "mrkdwn",
+                        "text": "💡 Use `/refine-proposal` for another version or `/finalize` to confirm"
+                    }
                     ]
                 }
             ]

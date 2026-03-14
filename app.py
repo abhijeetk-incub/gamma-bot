@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+import time
 from flask import Flask, request
 from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
@@ -1478,6 +1479,9 @@ def handle_member_joined_channel(event, say):
         # Send a welcome message
         say("👋 Hello! I've been added to this channel. Let me set up project canvases for you...")
         
+        # Wait 5 seconds before fetching and creating canvases
+        time.sleep(5)
+        
         # Get project_id for this channel
         project_id = get_project_by_channel(channel)
         
@@ -1760,6 +1764,9 @@ def handle_channel_created_webhook():
             return {"error": "Missing channel_id or project_id"}, 400
         
         print(f"Frontend notification: Channel {channel_id} created for project {project_id}")
+        
+        # Wait 5 seconds before fetching and creating canvases
+        time.sleep(5)
         
         # Get the project requirements
         requirements_data = get_project_requirements(project_id)

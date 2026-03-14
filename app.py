@@ -1482,6 +1482,32 @@ def handle_member_joined_channel(event, say):
         # Wait 5 seconds before fetching and creating canvases
         time.sleep(5)
         
+        # Check if canvases already exist for this channel
+        existing_canvas_ids = get_canvas_ids(channel)
+        if existing_canvas_ids.get("requirements_canvas_id") or existing_canvas_ids.get("proposal_canvas_id"):
+            # Canvases already exist, just show them
+            say({
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "✅ *Project canvases already exist for this channel.*"
+                        }
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": "Use `/show-requirements` or `/show-proposal` to view them • `/help` for all commands"
+                            }
+                        ]
+                    }
+                ]
+            })
+            return
+        
         # Get project_id for this channel
         project_id = get_project_by_channel(channel)
         
@@ -1767,6 +1793,17 @@ def handle_channel_created_webhook():
         
         # Wait 5 seconds before fetching and creating canvases
         time.sleep(5)
+        
+        # Check if canvases already exist for this channel
+        existing_canvas_ids = get_canvas_ids(channel_id)
+        if existing_canvas_ids.get("requirements_canvas_id") or existing_canvas_ids.get("proposal_canvas_id"):
+            print(f"Canvases already exist for channel {channel_id}, skipping creation")
+            return {
+                "status": "already_exists",
+                "message": "Canvases already exist for this channel",
+                "requirements_canvas_id": existing_canvas_ids.get("requirements_canvas_id"),
+                "proposal_canvas_id": existing_canvas_ids.get("proposal_canvas_id")
+            }, 200
         
         # Get the project requirements
         requirements_data = get_project_requirements(project_id)

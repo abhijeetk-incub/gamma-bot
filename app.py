@@ -205,6 +205,28 @@ def get_latest_proposal(project_id):
         print(f"Error fetching proposal for project {project_id}: {e}")
         return {"error": str(e)}
 
+# Helper function to get project requirements
+def get_project_requirements(project_id):
+    """
+    Get the original project requirements for a project
+    Returns requirements data or error
+    """
+    try:
+        response = requests.get(
+            f"{AGENT_SERVER_URL}/project/{project_id}/requirements",
+            headers={"Content-Type": "application/json"},
+            timeout=10
+        )
+        
+        if response.status_code == 404:
+            return {"error": "No requirements found for this project."}
+        
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching requirements for project {project_id}: {e}")
+        return {"error": str(e)}
+
 # Handle /ask command
 @app.command("/ask")
 def handle_ask_command(ack, say, command):
@@ -964,6 +986,111 @@ def handle_show_proposal_command(ack, say, command):
     # Format and send proposal
     say({"blocks": blocks})
 
+# Handle /show-requirements command
+@app.command("/show-requirements")
+def handle_show_requirements_command(ack, say, command):
+    ack()
+    channel_id = command["channel_id"]
+    
+    # Show loading indicator
+    say("Fetching project requirements for this channel...\nPlease wait...")
+    
+    # Get project_id for this channel
+    project_id = get_project_by_channel(channel_id)
+    
+    if not project_id:
+        say({
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*No Project Found*\n\nThis channel is not linked to any project. Please link a project to this channel first."
+                    }
+                }
+            ]
+        })
+        return
+    
+    # Get project requirements
+    requirements_data = get_project_requirements(project_id)
+    
+    if "error" in requirements_data:
+        say({
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Error*\n\n{requirements_data['error']}"
+                    }
+                }
+            ]
+        })
+        return
+    
+    # Convert markdown to Slack format and split into chunks if needed
+    requirements_text = requirements_data.get('requirements', '')
+    slack_formatted_requirements = convert_markdown_to_slack(requirements_text)
+    requirements_chunks = split_text_for_slack(slack_formatted_requirements, max_length=2800)
+    
+    # Build blocks dynamically
+    blocks = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": "📝 Project Requirements",
+                "emoji": True
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Project:* `{requirements_data.get('project_id')}` • *Original Requirements*"
+                }
+            ]
+        },
+        {
+            "type": "divider"
+        }
+    ]
+    
+    # Add content blocks
+    for i, chunk in enumerate(requirements_chunks):
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": chunk
+            }
+        })
+        
+        # Add divider between chunks for better readability
+        if i < len(requirements_chunks) - 1:
+            blocks.append({"type": "divider"})
+    
+    # Add footer with actions
+    blocks.extend([
+        {
+            "type": "divider"
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": "Use /show-proposal to view the proposal • /ask to ask questions"
+                }
+            ]
+        }
+    ])
+    
+    # Send requirements
+    say({"blocks": blocks})
+
 # Handle /help command
 @app.command("/help")
 def handle_help_command(ack, say):
@@ -988,7 +1115,7 @@ def handle_help_command(ack, say):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "• `/ask <question>` - Ask the AI agent a question\n• `/show-proposal` - View the proposal for this channel\n• `/refine-proposal` - Refine the proposal with a different version\n• `/finalize` - Confirm and save the current response\n• `/status` - Check bot status\n• `/clear` - Clear your conversation history\n• `/help` - Show this help message"
+                    "text": "• `/ask <question>` - Ask the AI agent a question\n• `/show-requirements` - View the original project requirements\n• `/show-proposal` - View the proposal for this channel\n• `/refine-proposal` - Refine the proposal with a different version\n• `/finalize` - Confirm and save the current response\n• `/status` - Check bot status\n• `/clear` - Clear your conversation history\n• `/help` - Show this help message"
                 }
             },
             {
@@ -1106,6 +1233,201 @@ def handle_app_mention(event, say):
             ]
         })
 
+# Handle when bot is added to a channel
+@app.event("member_joined_channel")
+def handle_member_joined_channel(event, say):
+    """
+    Triggered when bot is added to a channel.
+    Automatically fetches and posts the requirements and proposal if project is linked.
+    """
+    user = event.get("user")
+    channel = event.get("channel")
+    
+    # Check if the bot itself was added (not another user)
+    try:
+        bot_user_id = app.client.auth_test()["user_id"]
+    except Exception as e:
+        print(f"Error getting bot user ID: {e}")
+        return
+    
+    if user == bot_user_id:
+        print(f"Bot added to channel: {channel}")
+        
+        # Send a welcome message
+        say("👋 Hello! I've been added to this channel. Let me fetch the project details for you...")
+        
+        # Get project_id for this channel
+        project_id = get_project_by_channel(channel)
+        
+        if not project_id:
+            say({
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "⚠️ *No Project Linked*\n\nThis channel is not linked to any project yet. Please link it first using your dashboard."
+                        }
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": "Use /help to see available commands"
+                            }
+                        ]
+                    }
+                ]
+            })
+            return
+        
+        # Get the project requirements
+        requirements_data = get_project_requirements(project_id)
+        
+        # Get the latest proposal
+        proposal_data = get_latest_proposal(project_id)
+        
+        # Check for errors
+        requirements_error = "error" in requirements_data
+        proposal_error = "error" in proposal_data
+        
+        if requirements_error and proposal_error:
+            say(f"❌ Could not fetch project details:\n• Requirements: {requirements_data.get('error', 'Unknown error')}\n• Proposal: {proposal_data.get('error', 'Unknown error')}")
+            return
+        
+        # Build blocks array
+        all_blocks = []
+        
+        # === REQUIREMENTS SECTION ===
+        if not requirements_error:
+            requirements_text = requirements_data.get('requirements', '')
+            slack_formatted_requirements = convert_markdown_to_slack(requirements_text)
+            requirements_chunks = split_text_for_slack(slack_formatted_requirements, max_length=2800)
+            
+            all_blocks.extend([
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "📝 Project Requirements",
+                        "emoji": True
+                    }
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Project:* `{requirements_data.get('project_id')}` • *Original Requirements*"
+                        }
+                    ]
+                },
+                {
+                    "type": "divider"
+                }
+            ])
+            
+            # Add requirements content
+            for i, chunk in enumerate(requirements_chunks):
+                all_blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": chunk
+                    }
+                })
+                if i < len(requirements_chunks) - 1:
+                    all_blocks.append({"type": "divider"})
+            
+            # Add spacing between sections
+            all_blocks.append({"type": "divider"})
+            all_blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": " "
+                }
+            })
+        
+        # === PROPOSAL SECTION ===
+        if not proposal_error:
+            content = proposal_data.get('content', '')
+            slack_formatted_content = convert_markdown_to_slack(content)
+            content_chunks = split_text_for_slack(slack_formatted_content, max_length=2800)
+            
+            all_blocks.extend([
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "📋 Project Proposal",
+                        "emoji": True
+                    }
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Project:* `{proposal_data.get('project_id')}` • *Version:* {proposal_data.get('version')} • *Auto-posted*"
+                        }
+                    ]
+                },
+                {
+                    "type": "divider"
+                }
+            ])
+            
+            # Add proposal content
+            for i, chunk in enumerate(content_chunks):
+                all_blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": chunk
+                    }
+                })
+                if i < len(content_chunks) - 1:
+                    all_blocks.append({"type": "divider"})
+        
+        # === FOOTER ===
+        all_blocks.extend([
+            {
+                "type": "divider"
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "💬 Use /show-proposal to view proposal • /refine-proposal to update • /ask to ask questions • /help for all commands"
+                    }
+                ]
+            }
+        ])
+        
+        # Send all blocks at once
+        say({"blocks": all_blocks})
+
+# Handle channel creation events (optional - for logging/tracking)
+@app.event("channel_created")
+def handle_channel_created(event):
+    """
+    Triggered when a new channel is created.
+    Used for logging and tracking purposes.
+    """
+    channel_info = event.get("channel", {})
+    channel_id = channel_info.get("id")
+    channel_name = channel_info.get("name")
+    creator = event.get("channel", {}).get("creator")
+    
+    print(f"📢 New channel created: {channel_name} ({channel_id}) by user {creator}")
+    
+    # You can add additional logic here if needed
+    # For example, check if the channel name matches a pattern
+    # or notify an admin channel about new channels
+
 # Handle direct messages (DMs) to the bot
 @app.event("message")
 def handle_message_events(event, say):
@@ -1192,5 +1514,178 @@ def slack_handler():
 def health_check():
     return {"status": "healthy", "bot": "GammaBot"}, 200
 
+@flask_app.route("/channel-created", methods=["POST"])
+def handle_channel_created_webhook():
+    """
+    Webhook endpoint for frontend to notify bot after channel creation.
+    Automatically posts the requirements and proposal to the new channel.
+    
+    Expected payload:
+    {
+        "channel_id": "C1234567890",
+        "project_id": "proj_123"
+    }
+    """
+    try:
+        data = request.json
+        channel_id = data.get("channel_id")
+        project_id = data.get("project_id")
+        
+        if not channel_id or not project_id:
+            return {"error": "Missing channel_id or project_id"}, 400
+        
+        print(f"Frontend notification: Channel {channel_id} created for project {project_id}")
+        
+        # Get the project requirements
+        requirements_data = get_project_requirements(project_id)
+        
+        # Get the proposal
+        proposal_data = get_latest_proposal(project_id)
+        
+        # Check for errors
+        requirements_error = "error" in requirements_data
+        proposal_error = "error" in proposal_data
+        
+        if requirements_error and proposal_error:
+            return {
+                "error": "Could not fetch project details",
+                "requirements_error": requirements_data.get('error'),
+                "proposal_error": proposal_data.get('error')
+            }, 404
+        
+        # Build blocks array
+        all_blocks = []
+        
+        # === REQUIREMENTS SECTION ===
+        if not requirements_error:
+            requirements_text = requirements_data.get('requirements', '')
+            slack_formatted_requirements = convert_markdown_to_slack(requirements_text)
+            requirements_chunks = split_text_for_slack(slack_formatted_requirements, max_length=2800)
+            
+            all_blocks.extend([
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "📝 Project Requirements",
+                        "emoji": True
+                    }
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Project:* `{requirements_data.get('project_id')}` • *Original Requirements*"
+                        }
+                    ]
+                },
+                {
+                    "type": "divider"
+                }
+            ])
+            
+            # Add requirements content
+            for i, chunk in enumerate(requirements_chunks):
+                all_blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": chunk
+                    }
+                })
+                if i < len(requirements_chunks) - 1:
+                    all_blocks.append({"type": "divider"})
+            
+            # Add spacing between sections
+            all_blocks.append({"type": "divider"})
+            all_blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": " "
+                }
+            })
+        
+        # === PROPOSAL SECTION ===
+        if not proposal_error:
+            content = proposal_data.get('content', '')
+            slack_formatted_content = convert_markdown_to_slack(content)
+            content_chunks = split_text_for_slack(slack_formatted_content, max_length=2800)
+            
+            all_blocks.extend([
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "📋 Project Proposal",
+                        "emoji": True
+                    }
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Project:* `{proposal_data.get('project_id')}` • *Version:* {proposal_data.get('version')} • *Auto-posted*"
+                        }
+                    ]
+                },
+                {
+                    "type": "divider"
+                }
+            ])
+            
+            # Add proposal content
+            for i, chunk in enumerate(content_chunks):
+                all_blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": chunk
+                    }
+                })
+                if i < len(content_chunks) - 1:
+                    all_blocks.append({"type": "divider"})
+        
+        # === FOOTER ===
+        all_blocks.extend([
+            {
+                "type": "divider"
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "💬 Use /show-proposal to view proposal • /refine-proposal to update • /ask to ask questions • /help for all commands"
+                    }
+                ]
+            }
+        ])
+        
+        # Post to Slack channel
+        app.client.chat_postMessage(
+            channel=channel_id,
+            blocks=all_blocks,
+            text="Project Requirements and Proposal"  # Fallback text
+        )
+        
+        return {
+            "status": "success",
+            "posted": True,
+            "channel_id": channel_id,
+            "project_id": project_id,
+            "sections": {
+                "requirements": not requirements_error,
+                "proposal": not proposal_error
+            }
+        }, 200
+        
+    except Exception as e:
+        print(f"Error in channel-created webhook: {e}")
+        return {"error": str(e)}, 500
+
 if __name__ == "__main__":
-    flask_app.run(debug=True, port=3000)
+    port = int(os.environ.get("PORT", 3000))
+    flask_app.run(debug=False, host="0.0.0.0", port=port)

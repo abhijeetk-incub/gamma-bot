@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# Canvas Storage
+canvas_storage.json
+
 # Python
 __pycache__/
 *.py[cod]

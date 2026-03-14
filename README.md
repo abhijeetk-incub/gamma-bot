@@ -4,18 +4,36 @@ An intelligent Slack bot that integrates with an AI agent server to provide smar
 
 ## Features
 
+- **Canvas-Based Documentation**: Requirements and proposals are displayed in dedicated Slack canvases
 - **Ask Questions**: Use `/ask` to query the AI agent
+- **Show Requirements**: Use `/show-requirements` to view project requirements in a canvas
+- **Show Proposal**: Use `/show-proposal` to view project proposal in a canvas
+- **Refine Proposal**: Use `/refine-proposal` to update the proposal with AI refinements
 - **Regenerate Responses**: Use `/regenerate` to get alternative answers
 - **Finalize**: Use `/finalize` to confirm and save responses
 - **Conversation History**: Maintains context per user/channel
 - **Direct Messages**: Chat directly with the bot in DMs
 - **App Mentions**: Mention the bot in channels to ask questions
+- **Automatic Canvas Creation**: When a channel is created, canvases are automatically set up
+
+## Canvas Functionality
+
+GammaBot uses Slack Canvases to provide a clean, organized way to view and update project documentation:
+
+- **Requirements Canvas**: A dedicated canvas for project requirements that persists throughout the project lifecycle
+- **Proposal Canvas**: A living document that gets updated when you refine the proposal
+- **Persistent Links**: The same canvas is reused, so bookmarks and links stay valid
+- **Automatic Updates**: When you refine a proposal, the canvas is updated in-place
+- **Rich Formatting**: Canvases support markdown tables, headers, lists, and more
 
 ## Commands
 
 | Command | Description | Example |
 |---------|-------------|---------|
 | `/ask <question>` | Ask the AI agent a question | `/ask What is machine learning?` |
+| `/show-requirements` | View project requirements in a canvas | `/show-requirements` |
+| `/show-proposal` | View project proposal in a canvas | `/show-proposal` |
+| `/refine-proposal` | Refine the proposal with AI and update the canvas | `/refine-proposal` |
 | `/regenerate` | Generate a different response to your last question | `/regenerate` |
 | `/finalize` | Confirm and save the current response | `/finalize` |
 | `/status` | Check bot and agent server status | `/status` |
@@ -51,9 +69,18 @@ AGENT_SERVER_URL=https://your-agent-server.com
    - `im:history`
    - `im:read`
    - `im:write`
+   - `channels:history`
+   - `channels:read`
+   - `groups:history`
+   - `groups:read`
+   - `canvases:read`
+   - `canvases:write`
 
 4. Create the following **Slash Commands**:
    - `/ask` - Description: "Ask the AI agent a question"
+   - `/show-requirements` - Description: "View project requirements canvas"
+   - `/show-proposal` - Description: "View project proposal canvas"
+   - `/refine-proposal` - Description: "Refine the project proposal"
    - `/regenerate` - Description: "Regenerate the last response"
    - `/finalize` - Description: "Finalize and save the current response"
    - `/status` - Description: "Check bot status"

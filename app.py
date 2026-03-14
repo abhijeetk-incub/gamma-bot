@@ -19,6 +19,33 @@ AGENT_SERVER_URL = os.environ.get("AGENT_SERVER_URL", "http://localhost:8000")
 # Store conversation state per user/channel
 conversation_state = {}
 
+# Canvas storage file path
+CANVAS_STORAGE_FILE = "canvas_storage.json"
+
+# Load canvas storage from file
+def load_canvas_storage():
+    """Load canvas storage from JSON file"""
+    if os.path.exists(CANVAS_STORAGE_FILE):
+        try:
+            with open(CANVAS_STORAGE_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading canvas storage: {e}")
+            return {}
+    return {}
+
+# Save canvas storage to file
+def save_canvas_storage(storage):
+    """Save canvas storage to JSON file"""
+    try:
+        with open(CANVAS_STORAGE_FILE, 'w') as f:
+            json.dump(storage, f, indent=2)
+    except Exception as e:
+        print(f"Error saving canvas storage: {e}")
+
+# Initialize canvas storage
+canvas_storage = load_canvas_storage()
+
 # Helper function to get project_id by channel_id
 def get_project_by_channel(channel_id):
     """
@@ -42,6 +69,110 @@ def get_project_by_channel(channel_id):
     except requests.exceptions.RequestException as e:
         print(f"Error fetching project_id for channel {channel_id}: {e}")
         return None
+
+# Canvas Helper Functions
+def get_canvas_ids(channel_id):
+    """Get canvas IDs for a channel"""
+    return canvas_storage.get(channel_id, {})
+
+def store_canvas_ids(channel_id, requirements_canvas_id=None, proposal_canvas_id=None):
+    """Store canvas IDs for a channel"""
+    if channel_id not in canvas_storage:
+        canvas_storage[channel_id] = {}
+    
+    if requirements_canvas_id:
+        canvas_storage[channel_id]["requirements_canvas_id"] = requirements_canvas_id
+    if proposal_canvas_id:
+        canvas_storage[channel_id]["proposal_canvas_id"] = proposal_canvas_id
+    
+    save_canvas_storage(canvas_storage)
+
+def create_canvas(channel_id, title, content):
+    """
+    Create a new canvas in a Slack channel
+    Returns canvas_id or None if failed
+    """
+    try:
+        # Convert markdown to canvas document format
+        document_content = {
+            "type": "markdown",
+            "markdown": content
+        }
+        
+        result = app.client.canvases_create(
+            channel_id=channel_id,
+            title=title,
+            document_content=document_content
+        )
+        
+        if result.get("ok"):
+            canvas_id = result.get("canvas_id")
+            print(f"Canvas created successfully: {canvas_id}")
+            return canvas_id
+        else:
+            print(f"Failed to create canvas: {result}")
+            return None
+    except Exception as e:
+        print(f"Error creating canvas: {e}")
+        return None
+
+def update_canvas(canvas_id, content):
+    """
+    Update an existing canvas with new content
+    Returns True if successful, False otherwise
+    """
+    try:
+        document_content = {
+            "type": "markdown",
+            "markdown": content
+        }
+        
+        result = app.client.canvases_edit(
+            canvas_id=canvas_id,
+            changes=[{
+                "operation": "replace",
+                "document_content": document_content
+            }]
+        )
+        
+        if result.get("ok"):
+            print(f"Canvas updated successfully: {canvas_id}")
+            return True
+        else:
+            print(f"Failed to update canvas: {result}")
+            return False
+    except Exception as e:
+        print(f"Error updating canvas: {e}")
+        return False
+
+def open_canvas(channel_id, canvas_id):
+    """
+    Post a message in the channel with a link to open the canvas
+    """
+    try:
+        app.client.chat_postMessage(
+            channel=channel_id,
+            text=f"Click to view canvas",
+            metadata={
+                "event_type": "canvas_reference",
+                "event_payload": {
+                    "canvas_id": canvas_id
+                }
+            },
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"📄 <slack://canvas/{canvas_id}|Open Canvas>"
+                    }
+                }
+            ]
+        )
+        return True
+    except Exception as e:
+        print(f"Error posting canvas link: {e}")
+        return False
 
 # Helper function to get Slack message history
 def get_channel_message_history(channel_id, limit=50):
@@ -103,17 +234,74 @@ def convert_markdown_to_slack(markdown_text):
     lines = markdown_text.split('\n')
     converted_lines = []
     in_code_block = False
+    in_table = False
+    table_headers = []
+    table_aligns = []
     
-    for line in lines:
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        
         # Handle code blocks
         if line.strip().startswith('```'):
             in_code_block = not in_code_block
             converted_lines.append('```')
+            i += 1
             continue
         
         if in_code_block:
             converted_lines.append(line)
+            i += 1
             continue
+        
+        # Detect markdown table start
+        if not in_table and '|' in line and i + 1 < len(lines) and '|' in lines[i + 1]:
+            next_line = lines[i + 1]
+            # Check if next line is separator (contains dashes)
+            if re.match(r'^\s*\|[\s\-:]+\|\s*$', next_line) or re.match(r'^\s*\|[\s\-:|]+', next_line):
+                in_table = True
+                # Parse headers
+                table_headers = [cell.strip() for cell in line.split('|') if cell.strip()]
+                # Parse alignment line
+                align_cells = [cell.strip() for cell in next_line.split('|') if cell.strip()]
+                table_aligns = []
+                for cell in align_cells:
+                    if cell.startswith(':') and cell.endswith(':'):
+                        table_aligns.append('center')
+                    elif cell.endswith(':'):
+                        table_aligns.append('right')
+                    else:
+                        table_aligns.append('left')
+                
+                # Start table formatting
+                converted_lines.append('\n```')
+                # Create header row
+                header_row = ' | '.join([f"{h:^20}" if j < len(table_aligns) and table_aligns[j] == 'center' 
+                                         else f"{h:<20}" for j, h in enumerate(table_headers)])
+                converted_lines.append(header_row)
+                # Create separator
+                converted_lines.append('-' * len(header_row))
+                
+                i += 2  # Skip header and separator lines
+                continue
+        
+        # Process table rows
+        if in_table and '|' in line:
+            cells = [cell.strip() for cell in line.split('|') if cell.strip()]
+            if cells:
+                # Format row with proper spacing
+                row = ' | '.join([f"{c:^20}" if j < len(table_aligns) and table_aligns[j] == 'center' 
+                                  else f"{c:<20}" for j, c in enumerate(cells)])
+                converted_lines.append(row)
+                i += 1
+                continue
+        
+        # End table if we encounter a non-table line
+        if in_table and '|' not in line:
+            in_table = False
+            converted_lines.append('```\n')
+            table_headers = []
+            table_aligns = []
         
         # Convert headers
         if line.startswith('# '):
@@ -144,6 +332,12 @@ def convert_markdown_to_slack(markdown_text):
                 converted_lines.append(line)
             else:
                 converted_lines.append(line)
+        
+        i += 1
+    
+    # Close table if still open at end
+    if in_table:
+        converted_lines.append('```')
     
     return '\n'.join(converted_lines)
 
@@ -276,36 +470,63 @@ def handle_ask_command(ack, say, command):
     
     # Format and send response
     response_text = result.get("answer", "No response received")
-    say({
-        "blocks": [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*Question:* {query}"
-                }
-            },
-            {
-                "type": "divider"
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*Response:*\n{response_text}"
-                }
-            },
-            {
-                "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": "Use /refine-proposal to get a different response or /finalize to confirm"
-                    }
-                ]
+    
+    # Convert markdown to Slack format and split into chunks if needed
+    slack_formatted_response = convert_markdown_to_slack(response_text)
+    response_chunks = split_text_for_slack(slack_formatted_response, max_length=2800)
+    
+    # Build blocks dynamically
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Question:* {query}"
             }
-        ]
-    })
+        },
+        {
+            "type": "divider"
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*Response:*"
+            }
+        }
+    ]
+    
+    # Add response chunks
+    for i, chunk in enumerate(response_chunks):
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": chunk
+            }
+        })
+        
+        # Add divider between chunks for better readability
+        if i < len(response_chunks) - 1:
+            blocks.append({"type": "divider"})
+    
+    # Add footer
+    blocks.extend([
+        {
+            "type": "divider"
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": "Use /refine-proposal to get a different response or /finalize to confirm"
+                }
+            ]
+        }
+    ])
+    
+    say({"blocks": blocks})
 
 # Handle /refine command (refine proposal)
 @app.command("/refine-proposal")
@@ -491,66 +712,80 @@ def handle_refine_approve(ack, body, say):
         say(f"Error: {str(e)}")
         return
     
-    # Format and send refined proposal
-    # Convert markdown to Slack format and split into chunks if needed
+    # Update canvas with refined proposal
     content = result.get("content", "No response received")
-    slack_formatted_content = convert_markdown_to_slack(content)
-    content_chunks = split_text_for_slack(slack_formatted_content, max_length=2800)
     
-    # Build blocks dynamically
-    blocks = [
-        {
-            "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": "Refined Proposal Generated"
-            }
-        },
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Project:* `{result.get('project_id')}` • *Version:* {result.get('version')} • *Updated:* {result.get('timestamp')}"
-                }
-            ]
-        },
-        {
-            "type": "divider"
-        }
-    ]
+    # Get canvas IDs for this channel
+    canvas_ids = get_canvas_ids(channel_id)
+    proposal_canvas_id = canvas_ids.get("proposal_canvas_id")
     
-    # Add content blocks
-    for i, chunk in enumerate(content_chunks):
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": chunk
-            }
-        })
+    if proposal_canvas_id:
+        # Update existing canvas
+        updated = update_canvas(
+            canvas_id=proposal_canvas_id,
+            content=f"# Project Proposal\n\n**Project:** {result.get('project_id')} | **Version:** {result.get('version')}\n\n---\n\n{content}"
+        )
         
-        # Add divider between chunks for better readability
-        if i < len(content_chunks) - 1:
-            blocks.append({"type": "divider"})
-    
-    # Add footer
-    blocks.extend([
-        {
-            "type": "divider"
-        },
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": "Use /show-proposal to view the full proposal • /refine-proposal to refine again"
-                }
-            ]
-        }
-    ])
-    
-    say({"blocks": blocks})
+        if updated:
+            say({
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "✅ Proposal Canvas Updated"
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"📋 *Refined Proposal Generated*\n\n<slack://canvas/{proposal_canvas_id}|Open Updated Proposal Canvas>"
+                        }
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*Project:* `{result.get('project_id')}` • *Version:* {result.get('version')} • *Updated:* {result.get('timestamp')}"
+                            }
+                        ]
+                    }
+                ]
+            })
+        else:
+            say("Failed to update proposal canvas. Please try again.")
+    else:
+        # Create new canvas if it doesn't exist
+        proposal_canvas_id = create_canvas(
+            channel_id=channel_id,
+            title="📋 Project Proposal",
+            content=f"# Project Proposal\n\n**Project:** {result.get('project_id')} | **Version:** {result.get('version')}\n\n---\n\n{content}"
+        )
+        
+        if proposal_canvas_id:
+            store_canvas_ids(channel_id, proposal_canvas_id=proposal_canvas_id)
+            say({
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "✅ Proposal Canvas Created"
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"📋 *Refined Proposal Generated*\n\n<slack://canvas/{proposal_canvas_id}|Open Proposal Canvas>"
+                        }
+                    }
+                ]
+            })
+        else:
+            say("Failed to create proposal canvas. Please try again.")
     
     # Store refinement history for tracking
     refine_history_key = f"refine_history_{channel_id}"
@@ -718,69 +953,88 @@ def handle_refine_edit_modal_submission(ack, body, client, view):
         )
         return
     
-    # Format and send refined proposal
-    # Convert markdown to Slack format and split into chunks if needed
+    # Update canvas with refined proposal
     content = result.get("content", "No response received")
-    slack_formatted_content = convert_markdown_to_slack(content)
-    content_chunks = split_text_for_slack(slack_formatted_content, max_length=2800)
     
-    # Build blocks dynamically
-    blocks = [
-        {
-            "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": "Refined Proposal Generated (Edited)"
-            }
-        },
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Project:* `{result.get('project_id')}` • *Version:* {result.get('version')} • *Updated:* {result.get('timestamp')}"
-                }
-            ]
-        },
-        {
-            "type": "divider"
-        }
-    ]
+    # Get canvas IDs for this channel
+    canvas_ids = get_canvas_ids(channel_id)
+    proposal_canvas_id = canvas_ids.get("proposal_canvas_id")
     
-    # Add content blocks
-    for i, chunk in enumerate(content_chunks):
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": chunk
-            }
-        })
+    if proposal_canvas_id:
+        # Update existing canvas
+        updated = update_canvas(
+            canvas_id=proposal_canvas_id,
+            content=f"# Project Proposal\n\n**Project:** {result.get('project_id')} | **Version:** {result.get('version')}\n\n---\n\n{content}"
+        )
         
-        # Add divider between chunks for better readability
-        if i < len(content_chunks) - 1:
-            blocks.append({"type": "divider"})
-    
-    # Add footer
-    blocks.extend([
-        {
-            "type": "divider"
-        },
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": "Use /show-proposal to view the full proposal • /refine-proposal to refine again"
-                }
-            ]
-        }
-    ])
-    
-    client.chat_postMessage(
-        channel=channel_id,
-        blocks=blocks
-    )
+        if updated:
+            client.chat_postMessage(
+                channel=channel_id,
+                blocks=[
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "✅ Proposal Canvas Updated (Edited)"
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"📋 *Refined Proposal Generated*\n\n<slack://canvas/{proposal_canvas_id}|Open Updated Proposal Canvas>"
+                        }
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*Project:* `{result.get('project_id')}` • *Version:* {result.get('version')} • *Updated:* {result.get('timestamp')}"
+                            }
+                        ]
+                    }
+                ]
+            )
+        else:
+            client.chat_postMessage(
+                channel=channel_id,
+                text="Failed to update proposal canvas. Please try again."
+            )
+    else:
+        # Create new canvas if it doesn't exist
+        proposal_canvas_id = create_canvas(
+            channel_id=channel_id,
+            title="📋 Project Proposal",
+            content=f"# Project Proposal\n\n**Project:** {result.get('project_id')} | **Version:** {result.get('version')}\n\n---\n\n{content}"
+        )
+        
+        if proposal_canvas_id:
+            store_canvas_ids(channel_id, proposal_canvas_id=proposal_canvas_id)
+            client.chat_postMessage(
+                channel=channel_id,
+                blocks=[
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "✅ Proposal Canvas Created"
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"📋 *Refined Proposal Generated*\n\n<slack://canvas/{proposal_canvas_id}|Open Proposal Canvas>"
+                        }
+                    }
+                ]
+            )
+        else:
+            client.chat_postMessage(
+                channel=channel_id,
+                text="Failed to create proposal canvas. Please try again."
+            )
     
     # Store refinement history for tracking (edited version)
     refine_history_key = f"refine_history_{channel_id}"
@@ -867,7 +1121,26 @@ def handle_show_proposal_command(ack, say, command):
     ack()
     channel_id = command["channel_id"]
     
-    # Show loading indicator
+    # Get canvas IDs for this channel
+    canvas_ids = get_canvas_ids(channel_id)
+    proposal_canvas_id = canvas_ids.get("proposal_canvas_id")
+    
+    # If canvas exists, post link to it
+    if proposal_canvas_id:
+        say({
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"📋 *Project Proposal*\n\n<slack://canvas/{proposal_canvas_id}|Open Proposal Canvas>"
+                    }
+                }
+            ]
+        })
+        return
+    
+    # If no canvas exists, fetch and create one
     say("Fetching proposal for this channel...\nPlease wait...")
     
     # Get project_id for this channel
@@ -887,27 +1160,7 @@ def handle_show_proposal_command(ack, say, command):
         })
         return
     
-    # # MOCK RESPONSE - Comment out for production
-    # from datetime import datetime
-    # proposal_data = {
-    #     "project_id": project_id,
-    #     "version": 2,
-    #     "content": "# Project Proposal - Mock Data\n\n"
-    #               "## Executive Summary\n"
-    #               "This is a mock proposal for testing purposes.\n\n"
-    #               "## Scope\n"
-    #               "- Develop web application\n"
-    #               "- Implement user authentication\n"
-    #               "- Deploy to production\n\n"
-    #               "## Budget\n"
-    #               "$50,000\n\n"
-    #               "## Timeline\n"
-    #               "3 months\n\n"
-    #               "This is mock proposal data.",
-    #     "timestamp": datetime.now().isoformat()
-    # }
-    
-    # Uncomment below for production (and comment out mock response above)
+    # Get proposal data
     proposal_data = get_latest_proposal(project_id)
     
     if "error" in proposal_data:
@@ -924,67 +1177,32 @@ def handle_show_proposal_command(ack, say, command):
         })
         return
     
-    # Convert markdown to Slack format and split into chunks if needed
-    content = proposal_data['content']
-    slack_formatted_content = convert_markdown_to_slack(content)
-    content_chunks = split_text_for_slack(slack_formatted_content, max_length=2800)
+    # Create canvas with proposal
+    proposal_content = proposal_data.get('content', '')
+    proposal_canvas_id = create_canvas(
+        channel_id=channel_id,
+        title="📋 Project Proposal",
+        content=f"# Project Proposal\n\n**Project:** {proposal_data.get('project_id')} | **Version:** {proposal_data.get('version')}\n\n---\n\n{proposal_content}"
+    )
     
-    # Build blocks dynamically with better structure
-    blocks = [
-        {
-            "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": "Project Proposal",
-                "emoji": True
-            }
-        },
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Project:* `{proposal_data['project_id']}` • *Version:* {proposal_data['version']} • *Updated:* {proposal_data['timestamp']}"
-                }
-            ]
-        },
-        {
-            "type": "divider"
-        }
-    ]
-    
-    # Add content blocks with better formatting
-    for i, chunk in enumerate(content_chunks):
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": chunk
-            }
-        })
+    if proposal_canvas_id:
+        # Store canvas ID
+        store_canvas_ids(channel_id, proposal_canvas_id=proposal_canvas_id)
         
-        # Add divider between chunks for better readability
-        if i < len(content_chunks) - 1:
-            blocks.append({"type": "divider"})
-    
-    # Add footer with actions
-    blocks.extend([
-        {
-            "type": "divider"
-        },
-        {
-            "type": "context",
-            "elements": [
+        # Post link to canvas
+        say({
+            "blocks": [
                 {
-                    "type": "mrkdwn",
-                    "text": "Use /refine-proposal to generate a refined version • /ask to ask questions about this proposal"
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"📋 *Project Proposal*\n\n<slack://canvas/{proposal_canvas_id}|Open Proposal Canvas>"
+                    }
                 }
             ]
-        }
-    ])
-    
-    # Format and send proposal
-    say({"blocks": blocks})
+        })
+    else:
+        say("Failed to create proposal canvas. Please try again.")
 
 # Handle /show-requirements command
 @app.command("/show-requirements")
@@ -992,7 +1210,26 @@ def handle_show_requirements_command(ack, say, command):
     ack()
     channel_id = command["channel_id"]
     
-    # Show loading indicator
+    # Get canvas IDs for this channel
+    canvas_ids = get_canvas_ids(channel_id)
+    requirements_canvas_id = canvas_ids.get("requirements_canvas_id")
+    
+    # If canvas exists, post link to it
+    if requirements_canvas_id:
+        say({
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"📝 *Project Requirements*\n\n<slack://canvas/{requirements_canvas_id}|Open Requirements Canvas>"
+                    }
+                }
+            ]
+        })
+        return
+    
+    # If no canvas exists, fetch and create one
     say("Fetching project requirements for this channel...\nPlease wait...")
     
     # Get project_id for this channel
@@ -1029,67 +1266,32 @@ def handle_show_requirements_command(ack, say, command):
         })
         return
     
-    # Convert markdown to Slack format and split into chunks if needed
+    # Create canvas with requirements
     requirements_text = requirements_data.get('requirements', '')
-    slack_formatted_requirements = convert_markdown_to_slack(requirements_text)
-    requirements_chunks = split_text_for_slack(slack_formatted_requirements, max_length=2800)
+    requirements_canvas_id = create_canvas(
+        channel_id=channel_id,
+        title="📝 Project Requirements",
+        content=f"# Project Requirements\n\n**Project:** {requirements_data.get('project_id')}\n\n---\n\n{requirements_text}"
+    )
     
-    # Build blocks dynamically
-    blocks = [
-        {
-            "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": "📝 Project Requirements",
-                "emoji": True
-            }
-        },
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Project:* `{requirements_data.get('project_id')}` • *Original Requirements*"
-                }
-            ]
-        },
-        {
-            "type": "divider"
-        }
-    ]
-    
-    # Add content blocks
-    for i, chunk in enumerate(requirements_chunks):
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": chunk
-            }
-        })
+    if requirements_canvas_id:
+        # Store canvas ID
+        store_canvas_ids(channel_id, requirements_canvas_id=requirements_canvas_id)
         
-        # Add divider between chunks for better readability
-        if i < len(requirements_chunks) - 1:
-            blocks.append({"type": "divider"})
-    
-    # Add footer with actions
-    blocks.extend([
-        {
-            "type": "divider"
-        },
-        {
-            "type": "context",
-            "elements": [
+        # Post link to canvas
+        say({
+            "blocks": [
                 {
-                    "type": "mrkdwn",
-                    "text": "Use /show-proposal to view the proposal • /ask to ask questions"
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"📝 *Project Requirements*\n\n<slack://canvas/{requirements_canvas_id}|Open Requirements Canvas>"
+                    }
                 }
             ]
-        }
-    ])
-    
-    # Send requirements
-    say({"blocks": blocks})
+        })
+    else:
+        say("Failed to create requirements canvas. Please try again.")
 
 # Handle /help command
 @app.command("/help")
@@ -1221,24 +1423,44 @@ def handle_app_mention(event, say):
         #     return
         
         response_text = result.get("response", "No response received")
-        say({
-            "blocks": [
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*Response:*\n{response_text}"
-                    }
+        
+        # Convert markdown to Slack format and split into chunks if needed
+        slack_formatted_response = convert_markdown_to_slack(response_text)
+        response_chunks = split_text_for_slack(slack_formatted_response, max_length=2800)
+        
+        # Build blocks dynamically
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Response:*"
                 }
-            ]
-        })
+            }
+        ]
+        
+        # Add response chunks
+        for i, chunk in enumerate(response_chunks):
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": chunk
+                }
+            })
+            
+            # Add divider between chunks for better readability
+            if i < len(response_chunks) - 1:
+                blocks.append({"type": "divider"})
+        
+        say({"blocks": blocks})
 
 # Handle when bot is added to a channel
 @app.event("member_joined_channel")
 def handle_member_joined_channel(event, say):
     """
     Triggered when bot is added to a channel.
-    Automatically fetches and posts the requirements and proposal if project is linked.
+    Creates canvases for requirements and proposal if project is linked.
     """
     user = event.get("user")
     channel = event.get("channel")
@@ -1254,7 +1476,7 @@ def handle_member_joined_channel(event, say):
         print(f"Bot added to channel: {channel}")
         
         # Send a welcome message
-        say("👋 Hello! I've been added to this channel. Let me fetch the project details for you...")
+        say("👋 Hello! I've been added to this channel. Let me set up project canvases for you...")
         
         # Get project_id for this channel
         project_id = get_project_by_channel(channel)
@@ -1296,103 +1518,83 @@ def handle_member_joined_channel(event, say):
             say(f"❌ Could not fetch project details:\n• Requirements: {requirements_data.get('error', 'Unknown error')}\n• Proposal: {proposal_data.get('error', 'Unknown error')}")
             return
         
-        # Build blocks array
-        all_blocks = []
+        # Create canvases
+        requirements_canvas_id = None
+        proposal_canvas_id = None
         
-        # === REQUIREMENTS SECTION ===
+        # === CREATE REQUIREMENTS CANVAS ===
         if not requirements_error:
             requirements_text = requirements_data.get('requirements', '')
-            slack_formatted_requirements = convert_markdown_to_slack(requirements_text)
-            requirements_chunks = split_text_for_slack(slack_formatted_requirements, max_length=2800)
+            requirements_canvas_id = create_canvas(
+                channel_id=channel,
+                title="📝 Project Requirements",
+                content=f"# Project Requirements\n\n**Project:** {requirements_data.get('project_id')}\n\n---\n\n{requirements_text}"
+            )
             
-            all_blocks.extend([
-                {
-                    "type": "header",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "📝 Project Requirements",
-                        "emoji": True
-                    }
-                },
-                {
-                    "type": "context",
-                    "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"*Project:* `{requirements_data.get('project_id')}` • *Original Requirements*"
-                        }
-                    ]
-                },
-                {
-                    "type": "divider"
+            if requirements_canvas_id:
+                print(f"Requirements canvas created: {requirements_canvas_id}")
+            else:
+                print("Failed to create requirements canvas")
+        
+        # === CREATE PROPOSAL CANVAS ===
+        if not proposal_error:
+            proposal_content = proposal_data.get('content', '')
+            proposal_canvas_id = create_canvas(
+                channel_id=channel,
+                title="📋 Project Proposal",
+                content=f"# Project Proposal\n\n**Project:** {proposal_data.get('project_id')} | **Version:** {proposal_data.get('version')}\n\n---\n\n{proposal_content}"
+            )
+            
+            if proposal_canvas_id:
+                print(f"Proposal canvas created: {proposal_canvas_id}")
+            else:
+                print("Failed to create proposal canvas")
+        
+        # Store canvas IDs
+        if requirements_canvas_id or proposal_canvas_id:
+            store_canvas_ids(channel, requirements_canvas_id, proposal_canvas_id)
+        
+        # Post welcome message with canvas links
+        blocks = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": "✅ Project Workspace Ready",
+                    "emoji": True
                 }
-            ])
-            
-            # Add requirements content
-            for i, chunk in enumerate(requirements_chunks):
-                all_blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": chunk
-                    }
-                })
-                if i < len(requirements_chunks) - 1:
-                    all_blocks.append({"type": "divider"})
-            
-            # Add spacing between sections
-            all_blocks.append({"type": "divider"})
-            all_blocks.append({
+            },
+            {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": " "
+                    "text": f"Your project canvases have been created for *{project_id}*"
+                }
+            },
+            {
+                "type": "divider"
+            }
+        ]
+        
+        if requirements_canvas_id:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"📝 *Requirements Canvas*\n<slack://canvas/{requirements_canvas_id}|Open Requirements>"
                 }
             })
         
-        # === PROPOSAL SECTION ===
-        if not proposal_error:
-            content = proposal_data.get('content', '')
-            slack_formatted_content = convert_markdown_to_slack(content)
-            content_chunks = split_text_for_slack(slack_formatted_content, max_length=2800)
-            
-            all_blocks.extend([
-                {
-                    "type": "header",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "📋 Project Proposal",
-                        "emoji": True
-                    }
-                },
-                {
-                    "type": "context",
-                    "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"*Project:* `{proposal_data.get('project_id')}` • *Version:* {proposal_data.get('version')} • *Auto-posted*"
-                        }
-                    ]
-                },
-                {
-                    "type": "divider"
+        if proposal_canvas_id:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"📋 *Proposal Canvas*\n<slack://canvas/{proposal_canvas_id}|Open Proposal>"
                 }
-            ])
-            
-            # Add proposal content
-            for i, chunk in enumerate(content_chunks):
-                all_blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": chunk
-                    }
-                })
-                if i < len(content_chunks) - 1:
-                    all_blocks.append({"type": "divider"})
+            })
         
-        # === FOOTER ===
-        all_blocks.extend([
+        blocks.extend([
             {
                 "type": "divider"
             },
@@ -1401,14 +1603,15 @@ def handle_member_joined_channel(event, say):
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": "💬 Use /show-proposal to view proposal • /refine-proposal to update • /ask to ask questions • /help for all commands"
+                        "text": "💬 Use `/show-requirements` or `/show-proposal` to view canvases • `/refine-proposal` to update • `/help` for all commands"
                     }
                 ]
             }
         ])
         
-        # Send all blocks at once
-        say({"blocks": all_blocks})
+        say({"blocks": blocks})
+        
+        say({"blocks": blocks})
 
 # Handle channel creation events (optional - for logging/tracking)
 @app.event("channel_created")
@@ -1485,26 +1688,48 @@ def handle_message_events(event, say):
             "project_id": project_id,
             "timestamp": datetime.now().isoformat()
         }
-        say({
-            "blocks": [
+        
+        # Convert markdown to Slack format and split into chunks if needed
+        slack_formatted_response = convert_markdown_to_slack(response_text)
+        response_chunks = split_text_for_slack(slack_formatted_response, max_length=2800)
+        
+        # Build blocks dynamically
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Response:*"
+                }
+            }
+        ]
+        
+        # Add response chunks
+        for i, chunk in enumerate(response_chunks):
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": chunk
+                }
+            })
+            
+            # Add divider between chunks for better readability
+            if i < len(response_chunks) - 1:
+                blocks.append({"type": "divider"})
+        
+        # Add footer
+        blocks.append({
+            "type": "context",
+            "elements": [
                 {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*Response:*\n{response_text}"
-                    }
-                },
-                {
-                    "type": "context",
-                    "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": "Use /refine-proposal for another version or /finalize to confirm"
-                    }
-                    ]
+                    "type": "mrkdwn",
+                    "text": "Use /refine-proposal for another version or /finalize to confirm"
                 }
             ]
         })
+        
+        say({"blocks": blocks})
 
 @flask_app.route("/slack", methods=["POST"])
 def slack_handler():
@@ -1518,7 +1743,7 @@ def health_check():
 def handle_channel_created_webhook():
     """
     Webhook endpoint for frontend to notify bot after channel creation.
-    Automatically posts the requirements and proposal to the new channel.
+    Creates canvases for requirements and proposal in the new channel.
     
     Expected payload:
     {
@@ -1553,137 +1778,115 @@ def handle_channel_created_webhook():
                 "proposal_error": proposal_data.get('error')
             }, 404
         
-        # Build blocks array
-        all_blocks = []
+        # Create canvases instead of posting messages
+        requirements_canvas_id = None
+        proposal_canvas_id = None
         
-        # === REQUIREMENTS SECTION ===
+        # === CREATE REQUIREMENTS CANVAS ===
         if not requirements_error:
             requirements_text = requirements_data.get('requirements', '')
-            slack_formatted_requirements = convert_markdown_to_slack(requirements_text)
-            requirements_chunks = split_text_for_slack(slack_formatted_requirements, max_length=2800)
+            requirements_canvas_id = create_canvas(
+                channel_id=channel_id,
+                title="📝 Project Requirements",
+                content=f"# Project Requirements\n\n**Project:** {requirements_data.get('project_id')}\n\n---\n\n{requirements_text}"
+            )
             
-            all_blocks.extend([
-                {
-                    "type": "header",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "📝 Project Requirements",
-                        "emoji": True
-                    }
-                },
-                {
-                    "type": "context",
-                    "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"*Project:* `{requirements_data.get('project_id')}` • *Original Requirements*"
-                        }
-                    ]
-                },
-                {
-                    "type": "divider"
-                }
-            ])
-            
-            # Add requirements content
-            for i, chunk in enumerate(requirements_chunks):
-                all_blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": chunk
-                    }
-                })
-                if i < len(requirements_chunks) - 1:
-                    all_blocks.append({"type": "divider"})
-            
-            # Add spacing between sections
-            all_blocks.append({"type": "divider"})
-            all_blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": " "
-                }
-            })
+            if requirements_canvas_id:
+                print(f"Requirements canvas created: {requirements_canvas_id}")
+            else:
+                print("Failed to create requirements canvas")
         
-        # === PROPOSAL SECTION ===
+        # === CREATE PROPOSAL CANVAS ===
         if not proposal_error:
-            content = proposal_data.get('content', '')
-            slack_formatted_content = convert_markdown_to_slack(content)
-            content_chunks = split_text_for_slack(slack_formatted_content, max_length=2800)
+            proposal_content = proposal_data.get('content', '')
+            proposal_canvas_id = create_canvas(
+                channel_id=channel_id,
+                title="📋 Project Proposal",
+                content=f"# Project Proposal\n\n**Project:** {proposal_data.get('project_id')} | **Version:** {proposal_data.get('version')}\n\n---\n\n{proposal_content}"
+            )
             
-            all_blocks.extend([
+            if proposal_canvas_id:
+                print(f"Proposal canvas created: {proposal_canvas_id}")
+            else:
+                print("Failed to create proposal canvas")
+        
+        # Store canvas IDs
+        if requirements_canvas_id or proposal_canvas_id:
+            store_canvas_ids(channel_id, requirements_canvas_id, proposal_canvas_id)
+        
+        # Post welcome message with canvas links
+        try:
+            blocks = [
                 {
                     "type": "header",
                     "text": {
                         "type": "plain_text",
-                        "text": "📋 Project Proposal",
+                        "text": "🎉 Project Workspace Created",
                         "emoji": True
                     }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"Welcome! Your project canvases have been created for *{project_id}*"
+                    }
+                },
+                {
+                    "type": "divider"
+                }
+            ]
+            
+            if requirements_canvas_id:
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"📝 *Requirements Canvas*\n<slack://canvas/{requirements_canvas_id}|Open Requirements>"
+                    }
+                })
+            
+            if proposal_canvas_id:
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"📋 *Proposal Canvas*\n<slack://canvas/{proposal_canvas_id}|Open Proposal>"
+                    }
+                })
+            
+            blocks.extend([
+                {
+                    "type": "divider"
                 },
                 {
                     "type": "context",
                     "elements": [
                         {
                             "type": "mrkdwn",
-                            "text": f"*Project:* `{proposal_data.get('project_id')}` • *Version:* {proposal_data.get('version')} • *Auto-posted*"
+                            "text": "💬 Use `/show-requirements` to view requirements • `/show-proposal` to view proposal • `/refine-proposal` to update • `/help` for all commands"
                         }
                     ]
-                },
-                {
-                    "type": "divider"
                 }
             ])
             
-            # Add proposal content
-            for i, chunk in enumerate(content_chunks):
-                all_blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": chunk
-                    }
-                })
-                if i < len(content_chunks) - 1:
-                    all_blocks.append({"type": "divider"})
-        
-        # === FOOTER ===
-        all_blocks.extend([
-            {
-                "type": "divider"
-            },
-            {
-                "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": "💬 Use /show-proposal to view proposal • /refine-proposal to update • /ask to ask questions • /help for all commands"
-                    }
-                ]
-            }
-        ])
-        
-        # Post to Slack channel
-        app.client.chat_postMessage(
-            channel=channel_id,
-            blocks=all_blocks,
-            text="Project Requirements and Proposal"  # Fallback text
-        )
+            app.client.chat_postMessage(
+                channel=channel_id,
+                text="Project Requirements and Proposal",
+                blocks=blocks
+            )
+        except Exception as e:
+            print(f"Error posting welcome message: {e}")
         
         return {
             "status": "success",
-            "posted": True,
-            "channel_id": channel_id,
-            "project_id": project_id,
-            "sections": {
-                "requirements": not requirements_error,
-                "proposal": not proposal_error
-            }
+            "message": "Canvases created successfully",
+            "requirements_canvas_id": requirements_canvas_id,
+            "proposal_canvas_id": proposal_canvas_id
         }, 200
-        
+    
     except Exception as e:
-        print(f"Error in channel-created webhook: {e}")
+        print(f"Error in channel_created webhook: {e}")
         return {"error": str(e)}, 500
 
 if __name__ == "__main__":

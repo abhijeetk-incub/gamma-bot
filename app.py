@@ -118,7 +118,7 @@ def convert_markdown_to_slack(markdown_text):
         # Convert headers
         if line.startswith('# '):
             # Main header - larger, bold with emoji
-            converted_lines.append(f"\n*📋 {line[2:].strip()}*\n")
+            converted_lines.append(f"\n*{line[2:].strip()}*\n")
         elif line.startswith('## '):
             # Section header - bold with spacing
             converted_lines.append(f"\n*{line[3:].strip()}*")
@@ -214,11 +214,11 @@ def handle_ask_command(ack, say, command):
     query = command.get("text", "").strip()
     
     if not query:
-        say("❌ Please provide a question. Usage: `/ask <your question>`")
+        say("Please provide a question. Usage: `/ask <your question>`")
         return
     
     # Show thinking indicator
-    say(f"🤔 Processing your question: _{query}_\n⏳ Please wait...")
+    say(f"Processing your question: _{query}_\nPlease wait...")
     
     # Get project_id for this channel
     project_id = get_project_by_channel(channel_id)
@@ -239,7 +239,7 @@ def handle_ask_command(ack, say, command):
             "messages": messages_text
         })
     except Exception as e:
-        say(f"❌ Error: {str(e)}")
+        say(f"Error: {str(e)}")
         return
     
     # Store conversation state
@@ -278,7 +278,7 @@ def handle_ask_command(ack, say, command):
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": "💡 Use `/refine-proposal` to get a different response or `/finalize` to confirm"
+                        "text": "Use /refine-proposal to get a different response or /finalize to confirm"
                     }
                 ]
             }
@@ -296,37 +296,69 @@ def handle_refine_command(ack, say, command):
     project_id = get_project_by_channel(channel_id)
     
     if not project_id:
-        say("❌ This channel is not linked to any project. Please link a project first.")
+        say("This channel is not linked to any project. Please link a project first.")
         return
     
     # Get message history from this channel
     message_history = get_channel_message_history(channel_id, limit=50)
     
-    # If no regular messages found, check if there's a conversation from /ask command
-    ask_conversation_key = f"{user_id}_{channel_id}"
-    if not message_history and ask_conversation_key in conversation_state:
-        # Use the question and response from /ask command
-        ask_state = conversation_state[ask_conversation_key]
-        message_history = [
-            {"user_id": user_id, "text": ask_state["last_query"], "timestamp": ask_state["timestamp"]},
-            {"user_id": "bot", "text": ask_state["last_response"], "timestamp": ask_state["timestamp"]}
-        ]
+    # Collect all messages including /ask questions
+    all_messages = []
     
-    if not message_history:
-        say("❌ No conversation history found in this channel. Please use `/ask` first or send some messages.")
+    # Add regular channel messages
+    all_messages.extend(message_history)
+    
+    # Check for /ask conversation history and include it
+    ask_conversation_key = f"{user_id}_{channel_id}"
+    if ask_conversation_key in conversation_state:
+        ask_state = conversation_state[ask_conversation_key]
+        # Add the question and response from /ask
+        all_messages.append({
+            "user_id": user_id,
+            "text": f"Question: {ask_state['last_query']}",
+            "timestamp": ask_state['timestamp']
+        })
+        all_messages.append({
+            "user_id": "bot",
+            "text": f"Response: {ask_state['last_response']}",
+            "timestamp": ask_state['timestamp']
+        })
+    
+    # Check if there was a previous refine that was rejected or needs continuation
+    refine_history_key = f"refine_history_{channel_id}"
+    if refine_history_key in conversation_state:
+        prev_refine = conversation_state[refine_history_key]
+        if prev_refine.get("status") == "rejected":
+            # Include previous rejected messages
+            say("Including messages from previous rejected refinement...")
+            # Get timestamp of last refine to include only newer messages
+            last_refine_time = prev_refine.get("timestamp")
+            # Add a note about this
+            all_messages.insert(0, {
+                "user_id": "system",
+                "text": "[Previous refinement was rejected - including those messages]",
+                "timestamp": last_refine_time
+            })
+    
+    if not all_messages:
+        say("No conversation history found in this channel. Please use `/ask` first or send some messages.")
         return
     
-    # Format messages for display
+    # Sort messages by timestamp
+    all_messages.sort(key=lambda x: x.get('timestamp', ''))
+    
+    # Format messages for display (show last 10)
     messages_preview = ""
-    for i, msg in enumerate(message_history[-10:], 1):  # Show last 10 messages
-        user_info = f"<@{msg['user_id']}>" if msg.get('user_id') and msg['user_id'] != "bot" else "GammaBot"
+    display_messages = all_messages[-10:] if len(all_messages) > 10 else all_messages
+    for i, msg in enumerate(display_messages, 1):
+        user_info = f"<@{msg['user_id']}>" if msg.get('user_id') and msg['user_id'] not in ["bot", "system"] else ("GammaBot" if msg['user_id'] == "bot" else "System")
         text_preview = msg['text'][:100] + "..." if len(msg['text']) > 100 else msg['text']
         messages_preview += f"{i}. {user_info}: _{text_preview}_\n"
     
     # Store the messages for later use
     conversation_key = f"refine_{user_id}_{channel_id}"
     conversation_state[conversation_key] = {
-        "messages": message_history,
+        "messages": all_messages,
         "project_id": project_id,
         "timestamp": datetime.now().isoformat()
     }
@@ -338,8 +370,7 @@ def handle_refine_command(ack, say, command):
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": "🔄 Refine Proposal - Review Messages",
-                    "emoji": True
+                    "text": "Refine Proposal - Review Messages"
                 }
             },
             {
@@ -354,7 +385,7 @@ def handle_refine_command(ack, say, command):
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"📊 Total messages: {len(message_history)} | Showing: Last 10"
+                        "text": f"Total messages: {len(all_messages)} | Showing: Last {len(display_messages)}"
                     }
                 ]
             },
@@ -376,8 +407,7 @@ def handle_refine_command(ack, say, command):
                         "type": "button",
                         "text": {
                             "type": "plain_text",
-                            "text": "✅ Approve",
-                            "emoji": True
+                            "text": "Approve"
                         },
                         "style": "primary",
                         "value": f"{user_id}_{channel_id}",
@@ -387,8 +417,7 @@ def handle_refine_command(ack, say, command):
                         "type": "button",
                         "text": {
                             "type": "plain_text",
-                            "text": "❌ Reject",
-                            "emoji": True
+                            "text": "Reject"
                         },
                         "style": "danger",
                         "value": f"{user_id}_{channel_id}",
@@ -398,8 +427,7 @@ def handle_refine_command(ack, say, command):
                         "type": "button",
                         "text": {
                             "type": "plain_text",
-                            "text": "✏️ Edit",
-                            "emoji": True
+                            "text": "Edit"
                         },
                         "value": f"{user_id}_{channel_id}",
                         "action_id": "refine_edit"
@@ -419,7 +447,7 @@ def handle_refine_approve(ack, body, say):
     
     # Check if we have the stored messages
     if conversation_key not in conversation_state:
-        say("❌ Session expired. Please run `/refine-proposal` again.")
+        say("Session expired. Please run `/refine-proposal` again.")
         return
     
     state = conversation_state[conversation_key]
@@ -427,7 +455,7 @@ def handle_refine_approve(ack, body, say):
     project_id = state["project_id"]
     
     # Update the message to show processing
-    say(f"✅ *Approved!* Refining proposal with {len(message_history)} messages...\n⏳ Please wait...")
+    say(f"*Approved!* Refining proposal with {len(message_history)} messages...\nPlease wait...")
     
     try:
         # Convert message_history to list of strings (just the text)
@@ -437,9 +465,8 @@ def handle_refine_approve(ack, body, say):
             "project_id": project_id,
             "messages": messages_text
         })
-        print(f"result: {result}")
     except Exception as e:
-        say(f"❌ Error: {str(e)}")
+        say(f"Error: {str(e)}")
         return
     
     # Format and send refined proposal
@@ -454,8 +481,7 @@ def handle_refine_approve(ack, body, say):
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": "✨ Refined Proposal Generated",
-                "emoji": True
+                "text": "Refined Proposal Generated"
             }
         },
         {
@@ -496,7 +522,7 @@ def handle_refine_approve(ack, body, say):
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": "💡 Use `/show-proposal` to view the full proposal • `/refine-proposal` to refine again"
+                    "text": "Use /show-proposal to view the full proposal • /refine-proposal to refine again"
                 }
             ]
         }
@@ -504,7 +530,16 @@ def handle_refine_approve(ack, body, say):
     
     say({"blocks": blocks})
     
-    # Clean up the conversation state
+    # Store refinement history for tracking
+    refine_history_key = f"refine_history_{channel_id}"
+    conversation_state[refine_history_key] = {
+        "status": "approved",
+        "messages": message_history,
+        "timestamp": datetime.now().isoformat(),
+        "user_id": user_id
+    }
+    
+    # Clean up the temporary conversation state
     del conversation_state[conversation_key]
 
 # Handle "Reject" button click
@@ -515,8 +550,20 @@ def handle_refine_reject(ack, body, say):
     channel_id = body["channel"]["id"]
     conversation_key = f"refine_{user_id}_{channel_id}"
     
-    # Clean up the conversation state
+    # Store rejection in history (DON'T delete - keep for next refinement)
     if conversation_key in conversation_state:
+        state = conversation_state[conversation_key]
+        
+        # Store refinement history with rejected status
+        refine_history_key = f"refine_history_{channel_id}"
+        conversation_state[refine_history_key] = {
+            "status": "rejected",
+            "messages": state["messages"],
+            "timestamp": datetime.now().isoformat(),
+            "user_id": user_id
+        }
+        
+        # Clean up the temporary conversation state
         del conversation_state[conversation_key]
     
     say({
@@ -525,7 +572,7 @@ def handle_refine_reject(ack, body, say):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "❌ *Proposal refinement cancelled.*\n\nNo changes were made."
+                    "text": "*Proposal refinement cancelled.*\n\nNo changes were made. These messages will be included if you run /refine-proposal again."
                 }
             }
         ]
@@ -543,7 +590,7 @@ def handle_refine_edit(ack, body, client):
     if conversation_key not in conversation_state:
         client.chat_postMessage(
             channel=channel_id,
-            text="❌ Session expired. Please run `/refine-proposal` again."
+            text="Session expired. Please run `/refine-proposal` again."
         )
         return
     
@@ -621,7 +668,7 @@ def handle_refine_edit_modal_submission(ack, body, client, view):
     if conversation_key not in conversation_state:
         client.chat_postMessage(
             channel=channel_id,
-            text="❌ Session expired. Please run `/refine-proposal` again."
+            text="Session expired. Please run `/refine-proposal` again."
         )
         return
     
@@ -631,7 +678,7 @@ def handle_refine_edit_modal_submission(ack, body, client, view):
     # Send processing message
     client.chat_postMessage(
         channel=channel_id,
-        text=f"✏️ *Edited messages received!* Refining proposal...\n⏳ Please wait..."
+        text=f"*Edited messages received!* Refining proposal...\nPlease wait..."
     )
     
     try:
@@ -645,7 +692,7 @@ def handle_refine_edit_modal_submission(ack, body, client, view):
     except Exception as e:
         client.chat_postMessage(
             channel=channel_id,
-            text=f"❌ Error: {str(e)}"
+            text=f"Error: {str(e)}"
         )
         return
     
@@ -661,8 +708,7 @@ def handle_refine_edit_modal_submission(ack, body, client, view):
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": "✨ Refined Proposal Generated (Edited)",
-                "emoji": True
+                "text": "Refined Proposal Generated (Edited)"
             }
         },
         {
@@ -703,7 +749,7 @@ def handle_refine_edit_modal_submission(ack, body, client, view):
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": "💡 Use `/show-proposal` to view the full proposal • `/refine-proposal` to refine again"
+                    "text": "Use /show-proposal to view the full proposal • /refine-proposal to refine again"
                 }
             ]
         }
@@ -713,6 +759,18 @@ def handle_refine_edit_modal_submission(ack, body, client, view):
         channel=channel_id,
         blocks=blocks
     )
+    
+    # Store refinement history for tracking (edited version)
+    refine_history_key = f"refine_history_{channel_id}"
+    # Create messages list from edited text
+    edited_messages_list = [{"user_id": user_id, "text": msg, "timestamp": datetime.now().isoformat()} 
+                           for msg in edited_messages]
+    conversation_state[refine_history_key] = {
+        "status": "approved_edited",
+        "messages": edited_messages_list,
+        "timestamp": datetime.now().isoformat(),
+        "user_id": user_id
+    }
     
     # Clean up the conversation state
     del conversation_state[conversation_key]
@@ -727,7 +785,7 @@ def handle_finalize_command(ack, say, command):
     
     # Check if there's a previous conversation
     if conversation_key not in conversation_state:
-        say("❌ No conversation found. Please use `/ask` first.")
+        say("No conversation found. Please use `/ask` first.")
         return
     
     state = conversation_state[conversation_key]
@@ -747,7 +805,7 @@ def handle_finalize_command(ack, say, command):
     #         "final_response": state["last_response"]
     #     })
     # except Exception as e:
-    #     say(f"❌ Error: {str(e)}")
+    #     say(f"Error: {str(e)}")
     #     return
     
     say({
@@ -756,7 +814,7 @@ def handle_finalize_command(ack, say, command):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "✅ *Response finalized!*"
+                    "text": "*Response finalized!*"
                 }
             },
             {
@@ -788,7 +846,7 @@ def handle_show_proposal_command(ack, say, command):
     channel_id = command["channel_id"]
     
     # Show loading indicator
-    say("📄 Fetching proposal for this channel...\n⏳ Please wait...")
+    say("Fetching proposal for this channel...\nPlease wait...")
     
     # Get project_id for this channel
     project_id = get_project_by_channel(channel_id)
@@ -800,7 +858,7 @@ def handle_show_proposal_command(ack, say, command):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": "❌ *No Project Found*\n\nThis channel is not linked to any project. Please link a project to this channel first."
+                        "text": "*No Project Found*\n\nThis channel is not linked to any project. Please link a project to this channel first."
                     }
                 }
             ]
@@ -823,7 +881,7 @@ def handle_show_proposal_command(ack, say, command):
     #               "$50,000\n\n"
     #               "## Timeline\n"
     #               "3 months\n\n"
-    #               "✨ This is mock proposal data.",
+    #               "This is mock proposal data.",
     #     "timestamp": datetime.now().isoformat()
     # }
     
@@ -837,7 +895,7 @@ def handle_show_proposal_command(ack, say, command):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"❌ *Error*\n\n{proposal_data['error']}"
+                        "text": f"*Error*\n\n{proposal_data['error']}"
                     }
                 }
             ]
@@ -855,7 +913,7 @@ def handle_show_proposal_command(ack, say, command):
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": "📋 Project Proposal",
+                "text": "Project Proposal",
                 "emoji": True
             }
         },
@@ -897,7 +955,7 @@ def handle_show_proposal_command(ack, say, command):
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": "💡 Use `/refine-proposal` to generate a refined version • `/ask` to ask questions about this proposal"
+                    "text": "Use /refine-proposal to generate a refined version • /ask to ask questions about this proposal"
                 }
             ]
         }
@@ -916,7 +974,7 @@ def handle_help_command(ack, say):
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": "🤖 GammaBot Commands"
+                    "text": "GammaBot Commands"
                 }
             },
             {
@@ -941,7 +999,7 @@ def handle_help_command(ack, say):
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": "💡 *Example:* `/ask What is machine learning?`"
+                        "text": "*Example:* `/ask What is machine learning?`"
                     }
                 ]
             }
@@ -956,9 +1014,9 @@ def handle_status_command(ack, say):
     # Check agent server status
     try:
         response = requests.get(f"{AGENT_SERVER_URL}/health", timeout=5)
-        agent_status = "🟢 Online" if response.status_code == 200 else "🟡 Limited"
+        agent_status = "Online" if response.status_code == 200 else "Limited"
     except:
-        agent_status = "🔴 Offline"
+        agent_status = "Offline"
     
     say({
         "blocks": [
@@ -966,7 +1024,7 @@ def handle_status_command(ack, say):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*GammaBot Status*\n\n• Bot: 🟢 Online\n• Agent Server: {agent_status}\n• Active Sessions: {len(conversation_state)}"
+                    "text": f"*GammaBot Status*\n\n• Bot: Online\n• Agent Server: {agent_status}\n• Active Sessions: {len(conversation_state)}"
                 }
             }
         ]
@@ -982,9 +1040,9 @@ def handle_clear_command(ack, say, command):
     
     if conversation_key in conversation_state:
         del conversation_state[conversation_key]
-        say("✅ Your conversation history has been cleared.")
+        say("Your conversation history has been cleared.")
     else:
-        say("ℹ️ No conversation history found.")
+        say("No conversation history found.")
 
 # Handle app mentions in channels
 @app.event("app_mention")
@@ -992,20 +1050,18 @@ def handle_app_mention(event, say):
     text = event.get("text", "").lower()
     user_id = event["user"]
     channel_id = event["channel"]
-
-    print("user_id", user_id)
     
     # Remove bot mention from text
     text = text.split(maxsplit=1)
     if len(text) > 1:
         query = text[1].strip()
     else:
-        say(f"Hi <@{user_id}>! 👋\n\nUse `/help` to see available commands or mention me with a question!")
+        say(f"Hi <@{user_id}>!\n\nUse `/help` to see available commands or mention me with a question!")
         return
     
     # Treat mentions as ask commands
     if query:
-        say(f"🤔 Processing your question: _{query}_\n⏳ Please wait...")
+        say(f"Processing your question: _{query}_\nPlease wait...")
         
         # Get project_id and message history
         project_id = get_project_by_channel(channel_id)
@@ -1017,7 +1073,7 @@ def handle_app_mention(event, say):
                        f"• Channel ID: {channel_id}\n"
                        f"• Project ID: {project_id or 'Not linked'}\n"
                        f"• Previous messages: {len(message_history)} found\n\n"
-                       f"✨ This is a test response. The actual agent API is not being called.",
+                       f"This is a test response. The actual agent API is not being called.",
             "session_id": f"mock_session_{channel_id}_{datetime.now().timestamp()}"
         }
         
@@ -1034,7 +1090,7 @@ def handle_app_mention(event, say):
         #         "messages": messages_text
         #     })
         # except Exception as e:
-        #     say(f"❌ Error: {str(e)}")
+        #     say(f"Error: {str(e)}")
         #     return
         
         response_text = result.get("response", "No response received")
@@ -1060,14 +1116,13 @@ def handle_message_events(event, say):
     user_id = event["user"]
     channel_id = event["channel"]
 
-    print("user_id", user_id)
-    print("channel_id", channel_id)
+
     
     if text.lower() in ["help", "hello", "hi"]:
-        say(f"Hi <@{user_id}>! 👋\n\nI'm GammaBot, your AI assistant.\n\nUse `/help` to see all available commands or just type your question!")
+        say(f"Hi <@{user_id}>!\n\nI'm GammaBot, your AI assistant.\n\nUse `/help` to see all available commands or just type your question!")
     else:
         # Treat DM as ask command
-        say(f"🤔 Processing your question...\n⏳ Please wait...")
+        say(f"Processing your question...\nPlease wait...")
         
         # Get project_id and message history
         project_id = get_project_by_channel(channel_id)
@@ -1079,7 +1134,7 @@ def handle_message_events(event, say):
                        f"• Channel ID: {channel_id}\n"
                        f"• Project ID: {project_id or 'Not linked'}\n"
                        f"• Previous messages: {len(message_history)} found\n\n"
-                       f"✨ This is a test response. The actual agent API is not being called.",
+                       f"This is a test response. The actual agent API is not being called.",
             "session_id": f"mock_session_{channel_id}_{datetime.now().timestamp()}"
         }
         
@@ -1096,7 +1151,7 @@ def handle_message_events(event, say):
         #         "messages": messages_text
         #     })
         # except Exception as e:
-        #     say(f"❌ Error: {str(e)}")
+        #     say(f"Error: {str(e)}")
         #     return
         
         response_text = result.get("response", "No response received")
@@ -1122,7 +1177,7 @@ def handle_message_events(event, say):
                     "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": "💡 Use `/refine-proposal` for another version or `/finalize` to confirm"
+                        "text": "Use /refine-proposal for another version or /finalize to confirm"
                     }
                     ]
                 }
